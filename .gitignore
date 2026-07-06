@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+jspm_packages/
+
+# Environment and Secrets
+.env
+.env.local
+.env.*.local
+misc/
+cookies.txt
+
+# Build and Temporary files
+dist/
+build/
+out/
+.tsx/
+*.tsbuildinfo
+scratch/
+
+# OS and IDE files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

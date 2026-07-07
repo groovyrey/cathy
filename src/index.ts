@@ -27,6 +27,7 @@ import { Readable } from "stream";
 
 import { requireEnv } from "./env";
 import { chatWithGemma } from "./gemma";
+import { db } from "./db";
 
 
 /** Resolve the path to yt-dlp (prefers local install, falls back to PATH) */
@@ -286,6 +287,23 @@ async function playNext(guildId: string): Promise<void> {
     });
 
     queue.player.play(resource);
+
+    // Increment play count in database
+    try {
+      await db.execute({
+        sql: "INSERT INTO songs (permalinkUrl, title, thumbnailUrl, playCount) VALUES (?, ?, ?, 1) ON CONFLICT(permalinkUrl) DO UPDATE SET playCount = playCount + 1",
+        args: [track.permalinkUrl, track.title, track.thumbnailUrl ?? null],
+      });
+    } catch (err) {
+      console.error(`[Cathy] [DB] Failed to update play count for "${track.title}":`, err);
+    }
+
+    // Notify the channel that the song has started
+    const textChannel = client.channels.cache.get(queue.textChannelId);
+    if (textChannel && "send" in textChannel) {
+      await (textChannel as any).send({ embeds: [nowPlayingEmbed(track, queue.tracks.length)] });
+    }
+
     console.log(`[Cathy] [Player] Now playing: "${track.title}" (Requested by: ${track.requestedBy} / ${track.requestedById}) in guild ${guildId}`);
   } catch (err) {
     console.error(`[Cathy] [Player] Failed to play "${track.title}" in guild ${guildId}:`, err);
@@ -372,12 +390,12 @@ client.on(Events.GuildCreate, (guild) => {
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
   if (message.channel.type === ChannelType.DM) {
-    console.log(`[Cathy] [DM] Received DM from ${message.author.tag} (${message.author.id}): "${message.content}"`);
+    console.log(`[Cathy] [DM] Received DM from ${message.author.tag} (${message.author.id}) (length: ${message.content.length})`);
     try {
       await message.channel.sendTyping();
-      const reply = await chatWithGemma(message.content);
+      const reply = await chatWithGemma(message.content, message.author.id);
       await message.channel.send(reply);
-      console.log(`[Cathy] [DM] Sent DM response to ${message.author.tag} (${message.author.id}): "${reply}"`);
+      console.log(`[Cathy] [DM] Sent DM response to ${message.author.tag} (${message.author.id}) (length: ${reply.length})`);
     } catch (error: any) {
       console.error(`[Cathy] [DM] Error in DM handling for user ${message.author.tag} (${message.author.id}):`, error);
       await message.channel.send("Something went wrong while generating a response.");
@@ -426,10 +444,10 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
   // /talk
   if (interaction.commandName === "talk") {
     const query = interaction.options.getString("message", true);
-    console.log(`[Cathy] [Command] /talk triggered by ${interaction.user.tag} with message: "${query}"`);
+    console.log(`[Cathy] [Command] /talk triggered by ${interaction.user.tag} (length: ${query.length})`);
     await interaction.deferReply();
     try {
-      const reply = await chatWithGemma(query);
+      const reply = await chatWithGemma(query, interaction.user.id);
       await interaction.editReply(reply);
       console.log(`[Cathy] [Command] /talk successfully replied to ${interaction.user.tag}`);
     } catch (error: any) {
@@ -515,7 +533,7 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
         };
         queues.set(guildId, queue);
 
-        await interaction.editReply({ embeds: [nowPlayingEmbed(newTrack, 1)] });
+        await interaction.editReply(`🎵 Starting playback for **${newTrack.title}**...`);
         console.log(`[Cathy] [Queue] Started playNext for guild ${guildId}`);
         playNext(guildId);
       } else {
@@ -534,6 +552,43 @@ async function handleCommand(interaction: ChatInputCommandInteraction) {
     } catch (error) {
       console.error(`[Cathy] [Command] /play failed for query "${song}":`, error);
       await interaction.editReply("❌ An error occurred while trying to play the music. Please try again.");
+    }
+    return;
+  }
+
+  // ─── /topmusic ──────────────────────────────────────────────────────────
+  if (interaction.commandName === "topmusic") {
+    console.log(`[Cathy] [Command] /topmusic triggered by ${interaction.user.tag}`);
+    await interaction.deferReply();
+    try {
+      const result = await db.execute("SELECT title, permalinkUrl, thumbnailUrl, playCount FROM songs ORDER BY playCount DESC LIMIT 10");
+      const topSongs = result.rows as any[];
+
+      if (topSongs.length === 0) {
+        await interaction.editReply("📭 No songs have been played yet! Be the first to jam! 🎵");
+        return;
+      }
+
+      const lines = topSongs.map((song, i) => 
+        `**${i + 1}.** [${song.title}](${song.permalinkUrl}) — 🎧 \`${song.playCount}\` plays`
+      ).join("\n");
+
+      const embed = new EmbedBuilder()
+        .setColor(Colors.Gold)
+        .setTitle("🏆 Cathy's All-Time Top Jams")
+        .setDescription(lines)
+        .setFooter({ text: "The most played tracks across all servers! 🌟" })
+        .setTimestamp();
+
+      // Set thumbnail to the #1 song's thumbnail
+      if (topSongs[0].thumbnailUrl) {
+        embed.setThumbnail(topSongs[0].thumbnailUrl);
+      }
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      console.error(`[Cathy] [Command] /topmusic failed:`, error);
+      await interaction.editReply("❌ An error occurred while fetching the top songs.");
     }
     return;
   }

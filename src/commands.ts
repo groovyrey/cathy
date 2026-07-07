@@ -32,6 +32,9 @@ export const commands = [
         .setRequired(true),
     ),
   new SlashCommandBuilder()
+    .setName("topmusic")
+    .setDescription("Show the top 10 most played songs! 🏆"),
+  new SlashCommandBuilder()
     .setName("nowplaying")
     .setDescription("What's Cathy playing right now? 🎧"),
   new SlashCommandBuilder()

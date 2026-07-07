@@ -1,11 +1,27 @@
 import { requireEnv } from "./env";
+import { db } from "./db";
 
-export async function chatWithGemma(message: string): Promise<string> {
+export async function chatWithGemma(message: string, userId: string): Promise<string> {
   const apiKey = requireEnv("GEMINI_API_KEY");
   const model = "gemma-4-31b-it";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  console.log(`[Cathy] [Gemma] Sending query to Gemma API: "${message}"`);
+  // 1. Retrieve last 15 messages for context
+  let context: any[] = [];
+  try {
+    const history = await db.execute({
+      sql: "SELECT role, content FROM chat_history WHERE userId = ? ORDER BY timestamp DESC LIMIT 15",
+      args: [userId],
+    });
+    context = (history.rows as any[]).reverse().map((row) => ({
+      role: row.role === "user" ? "user" : "model",
+      parts: [{ text: row.content }],
+    }));
+  } catch (error) {
+    console.error(`[Cathy] [DB] Error fetching chat history for user ${userId}:`, error);
+  }
+
+  console.log(`[Cathy] [Gemma] Sending query to Gemma API with ${context.length} messages of history (length: ${message.length})`);
 
   let response: Response;
   try {
@@ -16,13 +32,10 @@ export async function chatWithGemma(message: string): Promise<string> {
       },
       body: JSON.stringify({
         contents: [
+          ...context,
           {
             role: "user",
-            parts: [
-              {
-                text: message,
-              },
-            ],
+            parts: [{ text: message }],
           },
         ],
         systemInstruction: {
@@ -59,7 +72,6 @@ export async function chatWithGemma(message: string): Promise<string> {
     throw new Error("No response content received from Gemini API");
   }
 
-  // Find the text part that doesn't have "thought: true"
   const responsePart = parts.find((p: any) => !p.thought);
   const responseText = responsePart?.text?.trim();
 
@@ -68,7 +80,28 @@ export async function chatWithGemma(message: string): Promise<string> {
     throw new Error("No final response text found in Gemini API response");
   }
 
-  console.log(`[Cathy] [Gemma] Successfully received reply: "${responseText}"`);
+  console.log(`[Cathy] [Gemma] Successfully received reply (length: ${responseText.length})`);
+
+  try {
+    await db.execute({
+      sql: "INSERT INTO chat_history (userId, role, content) VALUES (?, ?, ?)",
+      args: [userId, "user", message],
+    });
+    await db.execute({
+      sql: "INSERT INTO chat_history (userId, role, content) VALUES (?, ?, ?)",
+      args: [userId, "model", responseText],
+    });
+    await db.execute({
+      sql: `DELETE FROM chat_history WHERE userId = ? AND id NOT IN (
+        SELECT id FROM (
+          SELECT id FROM chat_history WHERE userId = ? ORDER BY timestamp DESC LIMIT 15
+        )
+      )`,
+      args: [userId, userId],
+    });
+  } catch (error) {
+    console.error(`[Cathy] [DB] Error saving chat history for user ${userId}:`, error);
+  }
 
   if (responseText.length > 2000) {
     return responseText.slice(0, 1990) + "...";

@@ -6,17 +6,22 @@ export async function chatWithGemma(message: string, userId: string): Promise<st
   const model = "gemma-4-31b-it";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  // 1. Retrieve last 15 messages for context
+  // 1. Retrieve last 20 messages for context
   let context: any[] = [];
   try {
     const history = await db.execute({
-      sql: "SELECT role, content FROM chat_history WHERE userId = ? ORDER BY timestamp DESC LIMIT 15",
+      sql: "SELECT role, content FROM chat_history WHERE userId = ? ORDER BY timestamp DESC LIMIT 20",
       args: [userId],
     });
     context = (history.rows as any[]).reverse().map((row) => ({
       role: row.role === "user" ? "user" : "model",
       parts: [{ text: row.content }],
     }));
+
+    // Ensure the history ends with a model response to avoid consecutive user messages
+    if (context.length > 0 && context[context.length - 1].role === "user") {
+      context.pop();
+    }
   } catch (error) {
     console.error(`[Cathy] [DB] Error fetching chat history for user ${userId}:`, error);
   }
@@ -94,7 +99,7 @@ export async function chatWithGemma(message: string, userId: string): Promise<st
     await db.execute({
       sql: `DELETE FROM chat_history WHERE userId = ? AND id NOT IN (
         SELECT id FROM (
-          SELECT id FROM chat_history WHERE userId = ? ORDER BY timestamp DESC LIMIT 15
+          SELECT id FROM chat_history WHERE userId = ? ORDER BY timestamp DESC LIMIT 20
         )
       )`,
       args: [userId, userId],
